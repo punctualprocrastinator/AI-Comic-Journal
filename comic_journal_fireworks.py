@@ -1,4 +1,10 @@
 import os
+import sys
+import pysqlite3
+sys.modules["sqlite3"] = pysqlite3
+
+import chromadb
+
 import streamlit as st
 from crewai import Agent, Task, Crew
 from langchain_groq import ChatGroq
