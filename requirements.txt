@@ -1,0 +1,23 @@
+# Core Streamlit and web framework
+streamlit>=1.28.0
+requests>=2.31.0
+
+# AI and ML libraries
+crewai>=0.28.8
+langchain>=0.1.0
+langchain-groq>=0.1.0
+langchain-community>=0.0.20
+
+# Additional dependencies for CrewAI and LangChain
+pydantic>=2.0.0
+openai>=1.0.0  # Still needed for some LangChain components
+tiktoken>=0.5.0
+
+# Utility libraries
+python-dotenv>=1.0.0
+pandas>=2.0.0  # Often used with Streamlit apps
+numpy>=1.24.0
+
+# Optional: For enhanced functionality
+Pillow>=10.0.0  # Image processing
+plotly>=5.17.0  # For potential charts/graphs
