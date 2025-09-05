@@ -370,26 +370,41 @@ def main():
                     context = "\n".join([f"{m['role']}: {m['content']}" 
                                        for m in st.session_state.messages[-5:]])  # Last 5 messages
                     
-                    task = Task(
-                        description=f"""
-                        User's message: "{user_input}"
-                        Recent context: {context}
+                    # Try CrewAI first, fallback to direct LLM
+                    try:
+                        task = Task(
+                            description=f"""
+                            User's message: "{user_input}"
+                            Recent context: {context}
+                            
+                            Respond step-by-step:
+                            1. What emotion/tone do I detect?
+                            2. What key details should I remember?
+                            3. How does this connect to our conversation?
+                            4. What's the most engaging response?
+                            
+                            Keep response warm, concise (2-3 sentences), and encouraging.
+                            """,
+                            agent=journal_agent,
+                            expected_output="A warm, engaging response that encourages further conversation"
+                        )
                         
-                        Respond step-by-step:
-                        1. What emotion/tone do I detect?
-                        2. What key details should I remember?
-                        3. How does this connect to our conversation?
-                        4. What's the most engaging response?
-                        
-                        Keep response warm, concise (2-3 sentences), and encouraging.
-                        """,
-                        agent=journal_agent,
-                        expected_output="A warm, engaging response that encourages further conversation"
-                    )
+                        crew = Crew(agents=[journal_agent], tasks=[task], verbose=False)
+                        result = crew.kickoff()
+                        response = str(result) if result is not None else "I'm having trouble responding right now. Could you try again?"
                     
-                    crew = Crew(agents=[journal_agent], tasks=[task], verbose=False)
-                    result = crew.kickoff()
-                    response = str(result) if result is not None else "I'm having trouble responding right now. Could you try again?"
+                    except Exception as crew_error:
+                        st.warning("Using alternative response method...")
+                        # Fallback to direct LLM call
+                        fallback_prompt = f"""
+                        You are a warm, empathetic AI companion helping someone journal about their day.
+                        
+                        User said: "{user_input}"
+                        Recent conversation: {context}
+                        
+                        Respond warmly and encourage them to share more. Keep it to 2-3 sentences.
+                        """
+                        response = direct_llm_response(fallback_prompt)
                     
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
