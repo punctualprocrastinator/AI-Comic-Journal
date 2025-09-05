@@ -1,10 +1,4 @@
 import os
-import sys
-import pysqlite3
-sys.modules["sqlite3"] = pysqlite3
-
-import chromadb
-
 import streamlit as st
 from crewai import Agent, Task, Crew
 from langchain_groq import ChatGroq
@@ -13,6 +7,7 @@ import requests
 import base64
 import time
 import logging
+import re
 
 # =====================
 # PAGE CONFIGURATION
@@ -69,21 +64,32 @@ st.markdown("""
 # =====================
 # API CONFIGURATION
 # =====================
-@st.cache_data
 def load_api_keys():
-    """Load API keys from Streamlit secrets"""
+    """Load API keys from Streamlit secrets with better error handling"""
     try:
-        return {
-            "groq": st.secrets["GROQ_API_KEY"],
-            "fireworks": st.secrets["FIREWORKS_API_KEY"]
-        }
-    except KeyError as e:
-        st.error(f"⚠️ Missing API key in secrets: {e}")
-        st.info("Please configure your API keys in Streamlit Cloud settings.")
-        st.stop()
+        if hasattr(st, 'secrets'):
+            return {
+                "groq": st.secrets.get("GROQ_API_KEY", ""),
+                "fireworks": st.secrets.get("FIREWORKS_API_KEY", "")
+            }
+        else:
+            # Fallback to environment variables
+            return {
+                "groq": os.getenv("GROQ_API_KEY", ""),
+                "fireworks": os.getenv("FIREWORKS_API_KEY", "")
+            }
+    except Exception as e:
+        st.error(f"⚠️ Error loading API keys: {e}")
+        st.info("Please configure your API keys in Streamlit Cloud settings or environment variables.")
+        return {"groq": "", "fireworks": ""}
 
 # Load API keys
 api_keys = load_api_keys()
+
+# Validate API keys
+if not api_keys["groq"] or not api_keys["fireworks"]:
+    st.error("⚠️ Missing API keys. Please configure GROQ_API_KEY and FIREWORKS_API_KEY.")
+    st.stop()
 
 # Initialize Groq client with error handling
 try:
@@ -91,7 +97,7 @@ try:
         model="openai/gpt-oss-120b", 
         api_key=api_keys["groq"], 
         temperature=0.7,
-        timeout=30  # Add timeout
+        timeout=30
     )
 except Exception as e:
     st.error(f"⚠️ Failed to initialize AI services: {str(e)}")
@@ -100,8 +106,20 @@ except Exception as e:
 # =====================
 # FIREWORKS AI IMAGE GENERATION
 # =====================
-def generate_image_with_fireworks(prompt, max_attempts=60):
-    """Generate image using Fireworks AI API with polling"""
+def is_valid_base64(s):
+    """Check if string is valid base64"""
+    try:
+        if isinstance(s, str):
+            # Check if it looks like base64
+            if re.match(r'^[A-Za-z0-9+/]*={0,2}$', s):
+                base64.b64decode(s, validate=True)
+                return True
+        return False
+    except Exception:
+        return False
+
+def generate_image_with_fireworks(prompt, max_attempts=90):
+    """Generate image using Fireworks AI API with improved error handling"""
     try:
         # Step 1: Submit the generation request
         url = "https://api.fireworks.ai/inference/v1/workflows/accounts/fireworks/models/flux-kontext-pro"
@@ -111,17 +129,19 @@ def generate_image_with_fireworks(prompt, max_attempts=60):
             "Authorization": f"Bearer {api_keys['fireworks']}",
         }
         data = {
-            "prompt": prompt
+            "prompt": prompt[:1000]  # Limit prompt length
         }
 
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        response.raise_for_status()  # Raise exception for bad status codes
+        
         result = response.json()
         request_id = result.get("request_id")
 
         if not request_id:
             raise Exception("No request ID returned from Fireworks AI")
 
-        st.info(f"🔄 Generation started (ID: {request_id[:8]}...)")
+        st.info(f"🔥 Generation started (ID: {request_id[:8]}...)")
 
         # Step 2: Poll for the result
         result_endpoint = f"{url}/get_result"
@@ -134,46 +154,53 @@ def generate_image_with_fireworks(prompt, max_attempts=60):
             # Update progress
             progress_container.text(f"⏳ Generating image... ({attempt + 1}/{max_attempts})")
             
-            result_response = requests.post(result_endpoint, 
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "image/jpeg",
-                    "Authorization": f"Bearer {api_keys['fireworks']}"
-                },
-                json={"id": request_id}
-            )
-            
-            poll_result = result_response.json()
-            status = poll_result.get("status")
-            
-            if status in ["Ready", "Complete", "Finished"]:
-                progress_container.empty()
-                image_data = poll_result.get("result", {}).get("sample")
+            try:
+                result_response = requests.post(result_endpoint, 
+                    headers={
+                        "Content-Type": "application/json",
+                        "Accept": "image/jpeg",
+                        "Authorization": f"Bearer {api_keys['fireworks']}"
+                    },
+                    json={"id": request_id},
+                    timeout=10
+                )
+                result_response.raise_for_status()
                 
-                if isinstance(image_data, str) and image_data.startswith("http"):
-                    # Image is available via URL
-                    return image_data
-                elif image_data:
-                    # Base64 encoded image data
-                    try:
-                        # Decode base64 and create a data URL for display
-                        decoded_data = base64.b64decode(image_data)
-                        # Convert to base64 string for display in Streamlit
-                        img_b64 = base64.b64encode(decoded_data).decode()
-                        return f"data:image/jpeg;base64,{img_b64}"
-                    except Exception as decode_error:
-                        st.error(f"Error decoding image: {decode_error}")
+                poll_result = result_response.json()
+                status = poll_result.get("status")
+                
+                if status in ["Ready", "Complete", "Finished"]:
+                    progress_container.empty()
+                    image_data = poll_result.get("result", {}).get("sample")
+                    
+                    if isinstance(image_data, str) and image_data.startswith("http"):
+                        # Image is available via URL
+                        return image_data
+                    elif image_data and is_valid_base64(image_data):
+                        # Base64 encoded image data
+                        try:
+                            # Decode base64 and create a data URL for display
+                            decoded_data = base64.b64decode(image_data)
+                            # Convert to base64 string for display in Streamlit
+                            img_b64 = base64.b64encode(decoded_data).decode()
+                            return f"data:image/jpeg;base64,{img_b64}"
+                        except Exception as decode_error:
+                            st.error(f"Error decoding image: {decode_error}")
+                            return None
+                    else:
+                        st.error("Invalid or missing image data returned")
                         return None
-                else:
-                    st.error("No image data returned")
-                    return None
-            
-            elif status in ["Failed", "Error"]:
-                progress_container.empty()
-                error_details = poll_result.get('details', 'Unknown error')
-                raise Exception(f"Generation failed: {error_details}")
-            
-            # Continue polling for other statuses (Processing, Queued, etc.)
+                
+                elif status in ["Failed", "Error"]:
+                    progress_container.empty()
+                    error_details = poll_result.get('details', 'Unknown error')
+                    raise Exception(f"Generation failed: {error_details}")
+                
+                # Continue polling for other statuses (Processing, Queued, etc.)
+                
+            except requests.exceptions.RequestException as req_error:
+                st.warning(f"Request error during polling: {req_error}")
+                continue  # Continue polling despite temporary network issues
         
         # If we've exhausted all attempts
         progress_container.empty()
@@ -191,12 +218,12 @@ def generate_image_with_fireworks(prompt, max_attempts=60):
 # RATE LIMITING
 # =====================
 def check_rate_limit():
-    """Implement simple rate limiting"""
+    """Implement rate limiting with session-specific tracking"""
     if 'last_request_time' not in st.session_state:
         st.session_state.last_request_time = 0
     
-    if time.time() - st.session_state.last_request_time < 3:  # 3 second cooldown
-        st.warning("⏳ Please wait a moment between requests to avoid overwhelming our servers...")
+    if time.time() - st.session_state.last_request_time < 2:  # 2 second cooldown
+        st.warning("⏳ Please wait a moment between requests...")
         return False
     
     st.session_state.last_request_time = time.time()
@@ -205,14 +232,15 @@ def check_rate_limit():
 # =====================
 # MEMORY MANAGEMENT
 # =====================
-@st.cache_resource
 def get_memory():
-    """Get or create conversation memory"""
-    return ConversationBufferMemory(
-        memory_key="chat_history", 
-        return_messages=True,
-        max_token_limit=1500  # Prevent memory overflow
-    )
+    """Get or create conversation memory (session-specific)"""
+    if 'conversation_memory' not in st.session_state:
+        st.session_state.conversation_memory = ConversationBufferMemory(
+            memory_key="chat_history", 
+            return_messages=True,
+            max_token_limit=2000  # Increased limit
+        )
+    return st.session_state.conversation_memory
 
 def manage_conversation_length():
     """Keep conversation history manageable"""
@@ -360,13 +388,16 @@ def main():
                     )
                     
                     crew = Crew(agents=[journal_agent], tasks=[task], verbose=False)
-                    response = str(crew.kickoff())
+                    result = crew.kickoff()
+                    response = str(result) if result is not None else "I'm having trouble responding right now. Could you try again?"
                     
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
                     
             except Exception as e:
-                st.error(f"⚠️ Sorry, I encountered an error: {str(e)}")
+                error_msg = f"⚠️ Sorry, I encountered an error: {str(e)}"
+                st.error(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": "I'm having some technical difficulties. Please try again."})
                 logging.error(f"Chat error: {str(e)}")
             finally:
                 st.session_state.processing = False
@@ -427,7 +458,8 @@ def main():
         
         if st.button("🗑️ Clear Chat", help="Start a new conversation"):
             st.session_state.messages = []
-            get_memory().clear()
+            if 'conversation_memory' in st.session_state:
+                st.session_state.conversation_memory.clear()
             st.rerun()
         
         if st.session_state.messages:
@@ -480,7 +512,8 @@ def generate_comic(story_agent, judge_agent, visual_agent, style, tone, panels):
             )
             
             story_crew = Crew(agents=[story_agent], tasks=[story_task], verbose=False)
-            story = str(story_crew.kickoff())
+            result = story_crew.kickoff()
+            story = str(result) if result is not None else "A day filled with interesting moments and conversations."
             progress_bar.progress(25)
         
         # Step 2: Quality check (50%)
@@ -502,7 +535,8 @@ def generate_comic(story_agent, judge_agent, visual_agent, style, tone, panels):
             )
             
             judge_crew = Crew(agents=[judge_agent], tasks=[judge_task], verbose=False)
-            final_story = str(judge_crew.kickoff())
+            result = judge_crew.kickoff()
+            final_story = str(result) if result is not None else story
             progress_bar.progress(50)
         
         # Step 3: Create visual prompt (75%)
@@ -530,7 +564,8 @@ def generate_comic(story_agent, judge_agent, visual_agent, style, tone, panels):
             )
             
             visual_crew = Crew(agents=[visual_agent], tasks=[visual_task], verbose=False)
-            comic_prompt = str(visual_crew.kickoff())
+            result = visual_crew.kickoff()
+            comic_prompt = str(result) if result is not None else f"A {panels}-panel {style} comic strip about daily life"
             progress_bar.progress(75)
         
         # Step 4: Generate image with Fireworks AI (100%)
@@ -567,7 +602,7 @@ def generate_comic(story_agent, judge_agent, visual_agent, style, tone, panels):
             else:
                 # URL to image
                 st.image(img_url, caption=f"Your {panels}-panel {style} comic strip")
-                st.markdown(f"[📥 Download Comic]({img_url})")
+                st.markdown(f"[🔥 Download Comic]({img_url})")
             
             # Store for potential sharing
             st.session_state.comic_url = img_url
