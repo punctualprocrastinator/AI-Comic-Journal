@@ -7,6 +7,7 @@ crewai>=0.28.8
 langchain>=0.1.0
 langchain-groq>=0.1.0
 langchain-community>=0.0.20
+pysqlite3-binary
 
 # Additional dependencies for CrewAI and LangChain
 pydantic>=2.0.0
