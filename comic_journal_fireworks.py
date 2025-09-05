@@ -82,7 +82,7 @@ api_keys = load_api_keys()
 # Initialize Groq client with error handling
 try:
     llm = ChatGroq(
-        model="mixtral-8x7b-32768", 
+        model="openai/gpt-oss-120b", 
         api_key=api_keys["groq"], 
         temperature=0.7,
         timeout=30  # Add timeout
